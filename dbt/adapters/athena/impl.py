@@ -1280,7 +1280,7 @@ class AthenaAdapter(SQLAdapter):
     @available
     def run_query_with_partitions_limit_catching(self, sql: str) -> str:
         try:
-            cursor = self._run_query(sql, catch_partitions_limit=True)
+            cursor = self._run_query(sql)
         except AthenaError as e:
             if "TOO_MANY_OPEN_PARTITIONS" in str(e):
                 return "TOO_MANY_OPEN_PARTITIONS"
@@ -1346,19 +1346,19 @@ class AthenaAdapter(SQLAdapter):
     def run_optimize_with_partition_limit_catching(self, optimize_query: str) -> None:
         while True:
             try:
-                self._run_query(optimize_query, catch_partitions_limit=False)
+                self._run_query(optimize_query)
                 break
             except AthenaError as e:
                 if "ICEBERG_OPTIMIZE_MORE_RUNS_NEEDED" not in str(e):
                     raise e
 
-    def _run_query(self, sql: str, catch_partitions_limit: bool) -> AthenaCursor:
+    def _run_query(self, sql: str) -> AthenaCursor:
         query = self.connections._add_query_comment(sql)
         conn = self.connections.get_thread_connection()
         cursor: AthenaCursor = conn.handle.cursor()
         LOGGER.debug(f"Running Athena query:\n{query}")
         try:
-            cursor.execute(query, catch_partitions_limit=catch_partitions_limit)
+            cursor.execute(query)
         except AthenaError as e:
             LOGGER.debug(f"CAUGHT EXCEPTION: {e}")
             raise e

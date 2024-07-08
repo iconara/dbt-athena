@@ -240,9 +240,7 @@ class AthenaCursor:
         self._column_info: List[ColumnInfo] = []
         self._query_execution_id: Optional[str] = None
 
-    def execute(
-        self, operation: str, parameters: Optional[List[str]] = None, catch_partitions_limit: bool = False
-    ) -> Self:
+    def execute(self, operation: str, parameters: Optional[List[str]] = None) -> Self:
         self._reset()
         self.query = self._formatter.format(operation, parameters)
         LOGGER.debug(f"Execute: {self.query}")
