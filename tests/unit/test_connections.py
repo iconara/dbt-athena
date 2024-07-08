@@ -1,5 +1,6 @@
 import datetime
 import math
+from concurrent.futures.thread import ThreadPoolExecutor
 from ipaddress import ip_address
 from unittest import mock
 from uuid import UUID
@@ -77,6 +78,67 @@ class TestAthenaConnection:
         cursor = connection.cursor()
         cursor.execute("SELECT NOW()")
         athena_client.start_query_execution.assert_called_once()
+
+    def test_cancel_running_queries(self, connection, athena_client):
+        start_query_execution_responses = [
+            {"QueryExecutionId": "q1"},
+            {"QueryExecutionId": "q2"},
+            {"QueryExecutionId": "q3"},
+        ]
+        athena_client.start_query_execution = mock.Mock(side_effect=start_query_execution_responses)
+        athena_client.get_query_execution = mock.Mock(return_value={"QueryExecution": {"Status": {"State": "QUEUED"}}})
+        athena_client.stop_query_execution = mock.Mock()
+        executor = ThreadPoolExecutor()
+        for _ in start_query_execution_responses:
+            executor.submit(lambda: connection.cursor().execute("SELECT NOW()"))
+        while athena_client.start_query_execution.call_count < len(start_query_execution_responses):
+            pass
+        connection.cancel_running_queries()
+        athena_client.get_query_execution = mock.Mock(
+            return_value={"QueryExecution": {"Status": {"State": "CANCELLED"}}}
+        )
+        executor.shutdown()
+        athena_client.stop_query_execution.assert_has_calls(
+            [
+                mock.call(QueryExecutionId="q1"),
+                mock.call(QueryExecutionId="q2"),
+                mock.call(QueryExecutionId="q3"),
+            ],
+            any_order=True,
+        )
+
+    def test_cancel_running_queries_does_not_cancel_completed_queries(self, connection, athena_client):
+        start_query_execution_responses = [
+            {"QueryExecutionId": "q1"},
+            {"QueryExecutionId": "q2"},
+            {"QueryExecutionId": "q3"},
+        ]
+        athena_client.start_query_execution = mock.Mock(side_effect=start_query_execution_responses)
+        athena_client.get_query_execution = mock.Mock(
+            side_effect=lambda params: {
+                "QueryExecution": {
+                    "Status": {"State": "SUCCEEDED" if params["QueryExecutionId"] == "q2" else "RUNNING"}
+                }
+            }
+        )
+        athena_client.stop_query_execution = mock.Mock()
+        executor = ThreadPoolExecutor()
+        for _ in start_query_execution_responses:
+            executor.submit(lambda: connection.cursor().execute("SELECT NOW()"))
+        while athena_client.start_query_execution.call_count < len(start_query_execution_responses):
+            pass
+        connection.cancel_running_queries()
+        athena_client.get_query_execution = mock.Mock(
+            return_value={"QueryExecution": {"Status": {"State": "CANCELLED"}}}
+        )
+        executor.shutdown()
+        athena_client.stop_query_execution.assert_has_calls(
+            [
+                mock.call(QueryExecutionId="q1"),
+                mock.call(QueryExecutionId="q3"),
+            ],
+            any_order=True,
+        )
 
 
 STATE_EVENT_QUEUED = {"QueryExecution": {"Status": {"State": "QUEUED"}}}

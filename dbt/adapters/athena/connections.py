@@ -15,6 +15,7 @@ from typing import (
     List,
     Optional,
     Self,
+    Set,
     Tuple,
     TypeAlias,
     Union,
@@ -206,12 +207,14 @@ class AthenaCursor:
 
     def __init__(
         self,
+        connection: Any,
         athena_client: Any,
         credentials: AthenaCredentials,
         formatter: AthenaParameterFormatter = AthenaParameterFormatter(),
         poll_delay: Callable[[float], None] = sleep,
         retry_interval_multiplier: int = 1,
     ) -> None:
+        self._connection: AthenaConnection = connection
         self._client = athena_client
         self._credentials = credentials
         self._poll_delay = poll_delay
@@ -253,7 +256,10 @@ class AthenaCursor:
 
     def _run_query(self) -> None:
         self._with_throttling_retries(self._start_execution)
-        self._await_completion()
+        if self._query_execution_id is not None:
+            self._connection.on_query_started(self._query_execution_id)
+            self._await_completion()
+            self._connection.on_query_finished(self._query_execution_id)
 
     def _start_execution(self) -> None:
         request = {
@@ -412,8 +418,8 @@ class AthenaCursor:
 
 class AthenaConnection:
     credentials: AthenaCredentials
-    session: BotoSession
     region_name: str
+    session: BotoSession
 
     def __init__(
         self, credentials: AthenaCredentials, boto_session_factory: Callable[[Any], BotoSession] = get_boto3_session
@@ -421,7 +427,8 @@ class AthenaConnection:
         self.credentials = credentials
         self.region_name = self.credentials.region_name
         self.session = boto_session_factory(self)
-        self._client = None
+        self._client: Any = None
+        self._running_queries: Set[str] = set()
 
     def connect(self, boto_config_factory: Callable[..., BotoConfig] = get_boto3_config) -> Self:
         boto_config = boto_config_factory(num_retries=self.credentials.effective_num_retries)
@@ -429,7 +436,20 @@ class AthenaConnection:
         return self
 
     def cursor(self) -> AthenaCursor:
-        return AthenaCursor(self._client, self.credentials)
+        return AthenaCursor(self, self._client, self.credentials)
+
+    def on_query_started(self, query_execution_id: str) -> None:
+        self._running_queries.add(query_execution_id)
+
+    def on_query_finished(self, query_execution_id: str) -> None:
+        self._running_queries.remove(query_execution_id)
+
+    def cancel_running_queries(self) -> None:
+        for query_execution_id in self._running_queries:
+            try:
+                self._client.stop_query_execution(QueryExecutionId=query_execution_id)
+            except Exception as e:
+                LOGGER.warning(f"Athena query {query_execution_id} could not be cancelled: {e}")
 
 
 class AthenaConnectionManager(SQLConnectionManager):
@@ -506,7 +526,8 @@ class AthenaConnectionManager(SQLConnectionManager):
         return cursor.rowcount, cursor.data_scanned_in_bytes
 
     def cancel(self, connection: Connection) -> None:
-        pass
+        if isinstance(connection, AthenaConnection):
+            connection.cancel_running_queries()
 
     def add_begin_query(self) -> None:
         pass
